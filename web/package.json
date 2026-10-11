@@ -9,8 +9,10 @@
     "mock": "node mock_device.js"
   },
   "dependencies": {
+    "@serialport/parser-readline": "^13.0.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
+    "serialport": "^13.0.0",
     "sqlite3": "^5.1.7"
   }
 }
