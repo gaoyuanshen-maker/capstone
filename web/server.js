@@ -120,7 +120,9 @@ app.post("/api/settings", (request, response) => {
       );
       if (serial && serial.isOpen) {
         serial.write(`SET:DIST=${distance_threshold_mm}\r\n`);
-        serial.write(`SET:ALERT=${sitting_alert_minutes}\r\n`);
+        setTimeout(() => {
+          serial.write(`SET:ALERT=${sitting_alert_minutes * 60}\r\n`);
+        }, 100);
       }
 
       return response.json({ ok: true, settings: currentSettings });
