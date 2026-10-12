@@ -76,14 +76,80 @@ app.get("/api/trends", (request, response) => {
     },
   );
 });
+app.get("/api/settings", (request, response) => {
+  response.json(currentSettings);
+});
 
+app.post("/api/settings", (request, response) => {
+  const { distance_threshold_mm, sitting_alert_minutes } = request.body ?? {};
+
+  if (
+    typeof distance_threshold_mm !== "number" ||
+    !Number.isInteger(distance_threshold_mm) ||
+    distance_threshold_mm < 50 ||
+    distance_threshold_mm > 2000 ||
+    typeof sitting_alert_minutes !== "number" ||
+    !Number.isInteger(sitting_alert_minutes) ||
+    sitting_alert_minutes < 1 ||
+    sitting_alert_minutes > 600
+  ) {
+    return response.status(400).json({ error: "Invalid settings payload." });
+  }
+
+  database.run(
+    `INSERT INTO settings (id, distance_threshold_mm, sitting_alert_minutes)
+     VALUES (1, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       distance_threshold_mm = excluded.distance_threshold_mm,
+       sitting_alert_minutes = excluded.sitting_alert_minutes`,
+    [distance_threshold_mm, sitting_alert_minutes],
+    (error) => {
+      if (error) {
+        return response.status(500).json({ error: "Could not save settings." });
+      }
+
+      currentSettings.distance_threshold_mm = distance_threshold_mm;
+      currentSettings.sitting_alert_minutes = sitting_alert_minutes;
+      console.log(
+        "[settings] 准备发送给板子, distance:",
+        distance_threshold_mm,
+        "alert:",
+        sitting_alert_minutes,
+        "串口是否打开:",
+        !!(serial && serial.isOpen),
+      );
+      if (serial && serial.isOpen) {
+        serial.write(`SET:DIST=${distance_threshold_mm}\r\n`);
+        serial.write(`SET:ALERT=${sitting_alert_minutes}\r\n`);
+      }
+
+      return response.json({ ok: true, settings: currentSettings });
+    },
+  );
+});
 app.use(express.static(path.join(__dirname, "public")));
 
 // ==================== 串口监听（真实硬件数据）====================
 const SERIAL_PORT_PATH =
   process.env.SERIAL_PORT || "/dev/tty.usbserial-B003R20K";
 const SERIAL_BAUD_RATE = 115200;
-const VIOLATION_DISTANCE_CM = 20;
+// 删除原来的: const VIOLATION_DISTANCE_CM = 20;
+
+// 换成这个,表示"网页当前用的设置",启动时先给个默认值
+let currentSettings = {
+  distance_threshold_mm: 250,
+  sitting_alert_minutes: 30,
+};
+
+function loadSettingsFromDb(callback) {
+  database.get("SELECT * FROM settings WHERE id = 1", (error, row) => {
+    if (!error && row) {
+      currentSettings.distance_threshold_mm = row.distance_threshold_mm;
+      currentSettings.sitting_alert_minutes = row.sitting_alert_minutes;
+    }
+    if (callback) callback();
+  });
+}
 
 let presentSinceMs = null;
 
@@ -110,7 +176,8 @@ function handleSerialLine(line) {
       presentSinceMs = Date.now();
     }
     sitting_duration_sec = Math.floor((Date.now() - presentSinceMs) / 1000);
-    status = distance_cm < VIOLATION_DISTANCE_CM ? "VIOLATION" : "NORMAL";
+    const thresholdCm = currentSettings.distance_threshold_mm / 10;
+    status = distance_cm < thresholdCm ? "VIOLATION" : "NORMAL";
   }
 
   insertReading(distance_cm, status, sitting_duration_sec, (error) => {
@@ -123,9 +190,9 @@ function handleSerialLine(line) {
     }
   });
 }
-
+let serial;
 try {
-  const serial = new SerialPort({
+  serial = new SerialPort({
     path: SERIAL_PORT_PATH,
     baudRate: SERIAL_BAUD_RATE,
   });
@@ -148,6 +215,18 @@ try {
 
 // ==================== 建表+启动服务器 ====================
 database.run(
+  `CREATE TABLE IF NOT EXISTS settings (
+    id INTEGER PRIMARY KEY,
+    distance_threshold_mm INTEGER NOT NULL DEFAULT 250,
+    sitting_alert_minutes INTEGER NOT NULL DEFAULT 30
+  )`,
+  (error) => {
+    if (error) {
+      console.error("Could not initialize settings table:", error.message);
+    }
+  },
+);
+database.run(
   `CREATE TABLE IF NOT EXISTS readings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -161,7 +240,7 @@ database.run(
       process.exitCode = 1;
       return;
     }
-
+    loadSettingsFromDb();
     app.listen(port, () => {
       console.log(`DeskSentry listening at http://localhost:${port}`);
     });
