@@ -24,6 +24,67 @@ function insertReading(distance_cm, status, sitting_duration_sec, callback) {
   );
 }
 
+// ==================== 实时数据(板子可能 0.1 秒一条)====================
+// 每条读数都实时推给网页;数据库最多每秒存一条(状态变化时也存),避免数据库暴涨
+const RECENT_WINDOW_MS = 60 * 1000; // 内存里保留最近 60 秒,给网页图表用
+const STORE_INTERVAL_MS = 1000;
+const RATE_WINDOW_MS = 5000;
+
+let readingSeq = 0;
+let recentReadings = [];
+let lastStoredMs = 0;
+let lastStoredStatus = null;
+const streamClients = new Set();
+
+// seated_since: 这次坐下的时间(毫秒),网页用它平滑地显示坐了多久
+function ingestReading(distance_cm, status, sitting_duration_sec, seated_since) {
+  const ts = Date.now();
+  const reading = {
+    seq: ++readingSeq,
+    ts,
+    distance_cm,
+    status,
+    sitting_duration_sec,
+    seated_since:
+      status === "VACANT"
+        ? null
+        : (seated_since ?? ts - sitting_duration_sec * 1000),
+  };
+
+  recentReadings.push(reading);
+  while (recentReadings[0].ts < ts - RECENT_WINDOW_MS) recentReadings.shift();
+
+  const message = `data: ${JSON.stringify(reading)}\n\n`;
+  for (const client of streamClients) client.write(message);
+
+  const store =
+    ts - lastStoredMs >= STORE_INTERVAL_MS || status !== lastStoredStatus;
+  if (store) {
+    lastStoredMs = ts;
+    lastStoredStatus = status;
+    insertReading(distance_cm, status, sitting_duration_sec, (error) => {
+      if (error) console.error("[data] 写入数据库失败:", error.message);
+    });
+  }
+  return { reading, stored: store };
+}
+
+// 最近 5 秒内平均每秒收到几条
+function dataRateHz() {
+  const now = Date.now();
+  const times = recentReadings
+    .filter((r) => r.ts >= now - RATE_WINDOW_MS)
+    .map((r) => r.ts);
+  if (times.length < 2 || now - times.at(-1) > 3000) return 0;
+  const spanSec = (times.at(-1) - times[0]) / 1000;
+  return Math.round(((times.length - 1) / spanSec) * 10) / 10;
+}
+
+const toApiReading = (row) => ({
+  ...row,
+  ts: Date.parse(`${row.timestamp.replace(" ", "T")}Z`),
+});
+
 app.post("/api/telemetry", (request, response) => {
   const { distance_cm, status, sitting_duration_sec } = request.body ?? {};
   const validStatuses = new Set(["NORMAL", "VIOLATION", "VACANT"]);
@@ -39,15 +100,50 @@ app.post("/api/telemetry", (request, response) => {
     return response.status(400).json({ error: "Invalid telemetry payload." });
   }
 
-  insertReading(distance_cm, status, sitting_duration_sec, (error, id) => {
-    if (error) {
-      return response.status(500).json({ error: "Could not save telemetry." });
-    }
-    return response.status(201).json({ id });
+  const { reading, stored } = ingestReading(
+    distance_cm,
+    status,
+    sitting_duration_sec,
+  );
+  return response.status(201).json({ seq: reading.seq, stored });
+});
+
+// 实时推送(Server-Sent Events):每收到一条读数就推给网页
+app.get("/api/stream", (request, response) => {
+  response.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
   });
+  response.flushHeaders();
+  response.write("retry: 2000\n\n");
+  streamClients.add(response);
+  request.on("close", () => streamClients.delete(response));
+});
+setInterval(() => {
+  for (const client of streamClients) client.write(": ping\n\n");
+}, 15000);
+
+// 最近 60 秒的读数;服务器刚启动内存里没有时,从数据库取最后 60 秒
+app.get("/api/recent", (request, response) => {
+  if (recentReadings.length) return response.json(recentReadings);
+  database.all(
+    `SELECT * FROM readings
+     WHERE timestamp >= (SELECT datetime(MAX(timestamp), '-60 seconds') FROM readings)
+     ORDER BY id ASC`,
+    (error, rows) => {
+      if (error) {
+        return response
+          .status(500)
+          .json({ error: "Could not read recent telemetry." });
+      }
+      return response.json(rows.map(toApiReading));
+    },
+  );
 });
 
 app.get("/api/latest", (request, response) => {
+  if (recentReadings.length) return response.json(recentReadings.at(-1));
   database.get(
     "SELECT * FROM readings ORDER BY id DESC LIMIT 1",
     (error, row) => {
@@ -125,6 +221,7 @@ app.get("/api/status", (request, response) => {
   response.json({
     serial_open: !!(serial && serial.isOpen),
     serial_path: SERIAL_PORT_PATH,
+    data_hz: dataRateHz(),
   });
 });
 
@@ -193,7 +290,17 @@ function sendSettingsToBoard() {
   return true;
 }
 
+// 高频读数会有噪声,两处防抖:
+// 1. 已经是 VIOLATION 时,要退到阈值 + 1cm 以外才算恢复 NORMAL,避免在阈值附近来回跳
+// 2. 板子报 AWAY 要持续 1 秒才算离开,偶尔一两条误读不会把坐姿计时清零
+const HYSTERESIS_CM = 1;
+const AWAY_GRACE_MS = 1000;
+
 let presentSinceMs = null;
+let awaySinceMs = null;
+let presentStatus = "NORMAL";
+let lastPresentDistanceCm = null;
+let lastLogMs = 0;
 
 function handleSerialLine(line) {
   const match = line.trim().match(/^DIST:(\d+),STATE:(PRESENT|AWAY)$/);
@@ -204,33 +311,55 @@ function handleSerialLine(line) {
 
   const distance_mm = Number(match[1]);
   const deviceState = match[2];
-  const distance_cm = Math.round((distance_mm / 10) * 10) / 10;
+  let distance_cm = Math.round((distance_mm / 10) * 10) / 10;
+  const now = Date.now();
 
   let status;
   let sitting_duration_sec;
 
   if (deviceState === "AWAY") {
+    if (awaySinceMs === null) awaySinceMs = now;
+  } else {
+    awaySinceMs = null;
+  }
+
+  if (
+    deviceState === "AWAY" &&
+    (presentSinceMs === null || now - awaySinceMs >= AWAY_GRACE_MS)
+  ) {
     status = "VACANT";
     presentSinceMs = null;
+    presentStatus = "NORMAL";
+    lastPresentDistanceCm = null;
     sitting_duration_sec = 0;
   } else {
     if (presentSinceMs === null) {
-      presentSinceMs = Date.now();
+      presentSinceMs = now;
     }
-    sitting_duration_sec = Math.floor((Date.now() - presentSinceMs) / 1000);
-    const thresholdCm = currentSettings.distance_threshold_mm / 10;
-    status = distance_cm < thresholdCm ? "VIOLATION" : "NORMAL";
+    sitting_duration_sec = Math.floor((now - presentSinceMs) / 1000);
+    if (deviceState === "PRESENT") {
+      const thresholdCm = currentSettings.distance_threshold_mm / 10;
+      const limit =
+        presentStatus === "VIOLATION" ? thresholdCm + HYSTERESIS_CM : thresholdCm;
+      presentStatus = distance_cm < limit ? "VIOLATION" : "NORMAL";
+      lastPresentDistanceCm = distance_cm;
+    } else if (lastPresentDistanceCm !== null) {
+      // AWAY 还没满 1 秒:沿用上一个正常距离(超量程时传感器会报 8190mm 之类的值)
+      distance_cm = lastPresentDistanceCm;
+    }
+    // AWAY 还没满 1 秒时保持上一个坐姿状态
+    status = presentStatus;
   }
 
-  insertReading(distance_cm, status, sitting_duration_sec, (error) => {
-    if (error) {
-      console.error("[serial] 写入数据库失败:", error.message);
-    } else {
-      console.log(
-        `[serial] 收到: ${distance_cm}cm | ${status} | 坐了${sitting_duration_sec}秒`,
-      );
-    }
-  });
+  ingestReading(distance_cm, status, sitting_duration_sec, presentSinceMs);
+
+  // 终端最多每秒打印一行,不然 0.1 秒一条会刷屏
+  if (now - lastLogMs >= 1000) {
+    lastLogMs = now;
+    console.log(
+      `[serial] 收到: ${distance_cm}cm | ${status} | 坐了${sitting_duration_sec}秒 | ${dataRateHz()} Hz`,
+    );
+  }
 }
 let serial;
 try {

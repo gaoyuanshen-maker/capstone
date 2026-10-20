@@ -304,7 +304,7 @@
 
   <div id="offline" class="panel offline" role="alert" hidden>
     Can’t reach the DeskSentry server at <span id="offline-api"></span>.
-    <span class="sub">Start it with <code>cd web</code> then <code>npm start</code>. This page retries every 2 seconds.</span>
+    <span class="sub">Start it with <code>cd web</code> then <code>npm start</code>. This page reconnects automatically.</span>
   </div>
 
   <div id="alert" class="panel alert" hidden>
@@ -333,10 +333,10 @@
 
   <section class="panel" aria-labelledby="trend-heading">
     <div class="chart-head">
-      <h2 id="trend-heading">Distance trend · last 30 readings</h2>
+      <h2 id="trend-heading">Distance trend · last 60 seconds</h2>
       <div class="legend"><span><i></i>Distance (cm)</span><span><i class="th"></i><span id="legend-th">Threshold 25 cm</span></span></div>
     </div>
-    <svg id="chart" role="img" aria-label="Line chart of the last 30 distance readings"></svg>
+    <svg id="chart" role="img" aria-label="Line chart of viewing distance over the last 60 seconds"></svg>
   </section>
 
   <div class="lower">
@@ -363,13 +363,14 @@
     <section class="panel" aria-labelledby="today-heading">
       <h2 id="today-heading">Today</h2>
       <div class="stats">
-        <div><span class="label">Readings</span><b id="st-count">--</b></div>
+        <div><span class="label">Logged</span><b id="st-count">--</b></div>
         <div><span class="label">Too close</span><b id="st-bad">--</b></div>
         <div><span class="label">Avg dist.</span><b id="st-avg">--</b></div>
       </div>
       <dl class="device">
         <dt>Server</dt><dd id="dev-server">--</dd>
         <dt>Board</dt><dd id="dev-board">--</dd>
+        <dt>Data rate</dt><dd id="dev-rate">--</dd>
         <dt>Last reading</dt><dd id="dev-last">--</dd>
       </dl>
     </section>
@@ -379,9 +380,11 @@
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  const MAX_POINTS = 30;
-  const POLL_MS = 2000;
-  const STALE_MS = 15000;
+  const WINDOW_MS = 60000;      // the chart shows the last 60 seconds
+  const STALE_MS = 15000;       // no reading for this long → "No new data"
+  const TIMER_STOP_MS = 5000;   // the sitting timer stops counting if readings stop
+  const GAP_MS = 2500;          // the chart line breaks across gaps longer than this
+  const MAX_RANGE_CM = 200;     // VL53L0X tops out around 2 m; it reports ~819 cm when nothing is in range
 
   // Served by Express → same origin. Opened as a file → talk to the local server.
   // Override with ?api=http://host:port
@@ -390,10 +393,9 @@
   const MUSIC_URL = "audio/bgm.mp3";
 
   const settings = { distance_threshold_mm: 250, sitting_alert_minutes: 30 };
-  let readings = [];        // { id, ts, distance_cm, status, sitting_duration_sec }
-  let latestId = null;
+  let readings = [];      // { seq?, ts, distance_cm, status, sitting_duration_sec, seated_since? }
+  let latest = null;
   let serverOnline = null;
-  let lastDuration = -1;
   let alertShown = false;
 
   async function api(path, options) {
@@ -403,9 +405,13 @@
     return body;
   }
 
-  // SQLite CURRENT_TIMESTAMP is UTC without a zone marker.
+  // Live readings carry ts in ms; rows from SQLite have a UTC timestamp without a zone marker.
   const parseTs = (s) => new Date(s.replace(" ", "T") + "Z").getTime();
-  const toReading = (r) => ({ ...r, distance_cm: Number(r.distance_cm), ts: parseTs(r.timestamp) });
+  const toReading = (r) => ({
+    ...r,
+    distance_cm: Number(r.distance_cm),
+    ts: typeof r.ts === "number" ? r.ts : parseTs(r.timestamp),
+  });
 
   function clock(ms) {
     return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
@@ -421,6 +427,7 @@
     if (s < 3600) return `${Math.floor(s / 60)} min ago`;
     return `${Math.floor(s / 3600)} h ago`;
   }
+  const setText = (id, text) => { if ($(id).textContent !== text) $(id).textContent = text; };
 
   // ---------- Connection ----------
   function setServerOnline(online) {
@@ -432,74 +439,121 @@
     if (!online) {
       $("link-dot").className = "dot off";
       $("link-label").textContent = "Server offline";
+      $("dev-rate").textContent = "--";
     }
   }
 
   function renderLink(status) {
-    const fresh = readings.length && Date.now() - readings.at(-1).ts < STALE_MS;
+    const fresh = latest && Date.now() - latest.ts < 3000;
+    const port = Object.assign(document.createElement("code"), { textContent: status.serial_path });
+    $("dev-board").replaceChildren(status.serial_open ? "Connected · " : "Not connected · ", port);
     if (status.serial_open) {
       $("link-dot").className = "dot live";
       $("link-label").textContent = "Board connected";
-      $("dev-board").innerHTML = "";
-      $("dev-board").append("Connected · ", Object.assign(document.createElement("code"), { textContent: status.serial_path }));
     } else {
       $("link-dot").className = fresh ? "dot live" : "dot paused";
       $("link-label").textContent = fresh ? "Server online · no board (mock data?)" : "Server online · no board";
-      $("dev-board").innerHTML = "";
-      $("dev-board").append("Not connected · ", Object.assign(document.createElement("code"), { textContent: status.serial_path }));
     }
+    $("dev-rate").textContent = status.data_hz
+      ? `${status.data_hz} Hz (one reading every ${Math.round(1000 / status.data_hz)} ms)`
+      : "No data coming in";
   }
 
-  // ---------- Rendering ----------
+  // ---------- Live readout ----------
+  // Readings can arrive ten times a second. Status, colours and the chart follow every
+  // reading; the big number glides toward each new value, which also hides sensor jitter.
   function renderReading(r) {
-    const thCm = settings.distance_threshold_mm / 10;
-    const dv = $("distance-value");
-    dv.firstChild.nodeValue = r.distance_cm.toFixed(1);
-    dv.className = "big num " + (r.status === "VIOLATION" ? "is-bad" : r.status === "VACANT" ? "is-idle" : "is-good");
-    $("distance-hint").textContent = r.status === "VACANT"
-      ? "Nobody at the desk"
-      : r.distance_cm < thCm
-        ? `${(thCm - r.distance_cm).toFixed(1)} cm inside the ${thCm} cm limit. Lean back.`
-        : `${(r.distance_cm - thCm).toFixed(1)} cm clear of the ${thCm} cm limit`;
-    $("status-badge").className = "badge " + r.status;
-    $("status-value").textContent = r.status;
+    const cls = "big num " + (r.status === "VIOLATION" ? "is-bad" : r.status === "VACANT" ? "is-idle" : "is-good");
+    if ($("distance-value").className !== cls) $("distance-value").className = cls;
+    if ($("status-badge").className !== "badge " + r.status) $("status-badge").className = "badge " + r.status;
+    setText("status-value", r.status);
     renderStale(r);
+  }
 
-    const alertSec = settings.sitting_alert_minutes * 60;
-    const dur = r.sitting_duration_sec;
-    $("duration-value").textContent = fmtDuration(dur);
-    const pct = Math.min(100, (dur / alertSec) * 100);
-    $("meter").firstElementChild.style.width = pct + "%";
-    $("meter").classList.toggle("over", dur >= alertSec);
-    $("meter-label").textContent = `${Math.floor(pct)}% of the ${settings.sitting_alert_minutes} min alert`;
+  function renderStale(r) {
+    const stale = Date.now() - r.ts > STALE_MS;
+    setText("status-hint", stale
+      ? `No new data since ${clock(r.ts)}`
+      : { NORMAL: "Posture OK", VIOLATION: "Too close to the screen", VACANT: "Seat empty, timer reset" }[r.status] ?? "");
+    setText("dev-last", `${clock(r.ts)} (${ago(r.ts)})`);
+  }
 
-    // A new sitting session starts when the seat empties or the timer goes back down.
-    if (r.status === "VACANT" || dur < lastDuration) {
+  let shownDistance = null;
+  function renderDistance(dt) {
+    if (!latest) return;
+    const target = latest.distance_cm;
+    if (target >= MAX_RANGE_CM) {
+      shownDistance = null;
+      const dv = $("distance-value");
+      if (dv.firstChild.nodeValue !== "--") dv.firstChild.nodeValue = "--";
+      setText("distance-hint", latest.status === "VACANT" ? "Nobody at the desk" : "Nothing in sensor range");
+      return;
+    }
+    shownDistance = shownDistance == null
+      ? target
+      : shownDistance + (target - shownDistance) * (1 - Math.exp(-dt / 120));
+    const text = shownDistance.toFixed(1);
+    const dv = $("distance-value");
+    if (dv.firstChild.nodeValue !== text) dv.firstChild.nodeValue = text;
+    const thCm = settings.distance_threshold_mm / 10;
+    setText("distance-hint", latest.status === "VACANT"
+      ? "Nobody at the desk"
+      : shownDistance < thCm
+        ? `${(thCm - shownDistance).toFixed(1)} cm inside the ${thCm} cm limit. Lean back.`
+        : `${(shownDistance - thCm).toFixed(1)} cm clear of the ${thCm} cm limit`);
+  }
+
+  // ---------- Sitting timer ----------
+  // Counted from the moment this sitting session started, so it ticks every second
+  // no matter how often readings arrive.
+  const timer = { since: null, frozen: 0 };
+
+  function syncTimer(r) {
+    const seated = r.status !== "VACANT";
+    const since = seated ? (r.seated_since ?? r.ts - r.sitting_duration_sec * 1000) : null;
+    // Same session if the start time barely moved (whole-second durations make a derived
+    // start time wobble by up to a second).
+    const same = since !== null && timer.since !== null && Math.abs(since - timer.since) < 1500;
+    if (!same) {
       alertShown = false;
       $("alert").hidden = true;
     }
-    lastDuration = dur;
-    if (r.status !== "VACANT" && dur >= alertSec && !alertShown) {
+    if (seated) {
+      timer.since = same ? Math.min(timer.since, since) : since;
+    } else {
+      timer.since = null;
+      timer.frozen = r.sitting_duration_sec;
+    }
+  }
+
+  function timerValue() {
+    if (timer.since === null) return timer.frozen;
+    const end = latest ? Math.min(Date.now(), latest.ts + TIMER_STOP_MS) : Date.now();
+    return Math.max(0, Math.floor((end - timer.since) / 1000));
+  }
+
+  function renderDuration() {
+    const alertSec = settings.sitting_alert_minutes * 60;
+    const dur = timerValue();
+    setText("duration-value", fmtDuration(dur));
+    const pct = Math.min(100, (dur / alertSec) * 100);
+    const width = pct.toFixed(2) + "%";
+    const bar = $("meter").firstElementChild;
+    if (bar.style.width !== width) bar.style.width = width;
+    $("meter").classList.toggle("over", dur >= alertSec);
+    setText("meter-label", `${Math.floor(pct)}% of the ${settings.sitting_alert_minutes} min alert`);
+    if (timer.since !== null && dur >= alertSec && !alertShown) {
       alertShown = true;
       $("alert-text").textContent = `Seated for ${fmtDuration(dur)}, past the ${settings.sitting_alert_minutes} min limit.`;
       $("alert").hidden = false;
     }
   }
 
-  function renderStale(r) {
-    const stale = Date.now() - r.ts > STALE_MS;
-    $("status-hint").textContent = stale
-      ? `No new data since ${clock(r.ts)}`
-      : { NORMAL: "Posture OK", VIOLATION: "Too close to the screen", VACANT: "Seat empty, timer reset" }[r.status] ?? "";
-    $("dev-last").textContent = `${clock(r.ts)} (${ago(r.ts)})`;
-  }
-
   function renderSettings() {
     $("th-input").value = settings.distance_threshold_mm;
     $("alert-input").value = settings.sitting_alert_minutes;
-    if (readings.length) renderReading(readings.at(-1));
-    else $("meter-label").textContent = `Alert at ${settings.sitting_alert_minutes} min`;
-    drawChart();
+    if (latest) renderReading(latest);
+    chartDirty = true;
   }
 
   function renderStats(s) {
@@ -508,8 +562,10 @@
     $("st-avg").textContent = s.avg_distance_cm != null ? Math.round(s.avg_distance_cm) + " cm" : "--";
   }
 
+  // ---------- Chart: last 60 seconds by time ----------
   const svg = $("chart");
   const NS = "http://www.w3.org/2000/svg";
+  let chartDirty = true;
   function el(name, attrs, text) {
     const n = document.createElementNS(NS, name);
     for (const k in attrs) n.setAttribute(k, attrs[k]);
@@ -520,11 +576,19 @@
     const W = svg.clientWidth || 600, H = svg.clientHeight || 260;
     const pad = { l: 38, r: 12, t: 10, b: 24 };
     const thCm = settings.distance_threshold_mm / 10;
-    const dataMax = Math.max(thCm, ...readings.map((r) => r.distance_cm), 80);
-    const step = dataMax > 120 ? 40 : 20;
+    const tEnd = latest ? latest.ts : Date.now();
+    const tStart = tEnd - WINDOW_MS;
+    // Out-of-range values are drawn at the top of the sensor's range.
+    const vis = readings.filter((r) => r.ts >= tStart)
+      .map((r) => (r.distance_cm > MAX_RANGE_CM ? { ...r, distance_cm: MAX_RANGE_CM } : r));
+    let dataMax = Math.max(thCm, 80);
+    for (const r of vis) if (r.distance_cm > dataMax) dataMax = r.distance_cm;
+    const step = dataMax > 240 ? 80 : dataMax > 120 ? 40 : 20;
     const yMax = Math.ceil((dataMax * 1.05) / step) * step;
-    const x = (i) => pad.l + (i / (MAX_POINTS - 1)) * (W - pad.l - pad.r);
+    const x = (ts) => pad.l + ((ts - tStart) / WINDOW_MS) * (W - pad.l - pad.r);
     const y = (v) => pad.t + (1 - v / yMax) * (H - pad.t - pad.b);
+    const f = (n) => n.toFixed(1);
+
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
     svg.replaceChildren();
     const defs = el("defs", {});
@@ -537,69 +601,124 @@
       svg.append(el("line", { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 }));
       svg.append(el("text", { x: pad.l - 6, y: y(v) + 4, "text-anchor": "end" }, v));
     }
-    if (readings.length) {
-      const offset = MAX_POINTS - readings.length;
-      const pts = readings.map((r, i) => [x(i + offset), y(r.distance_cm)]);
-      const d = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-      svg.append(el("path", { d: `${d} L${pts.at(-1)[0]} ${y(0)} L${pts[0][0]} ${y(0)} Z`, fill: "url(#aero-fill)" }));
-      svg.append(el("path", { d, fill: "none", stroke: "var(--aqua)", "stroke-width": 3, "stroke-linejoin": "round" }));
-      readings.forEach((r, i) => {
-        const [px, py] = pts[i];
-        const color = r.status === "VIOLATION" ? "var(--bad)" : r.status === "VACANT" ? "var(--idle)" : "var(--aqua)";
-        svg.append(el("circle", { cx: px, cy: py, r: i === readings.length - 1 ? 4.5 : 2.5, fill: color }));
-      });
-      const labelEvery = W < 500 ? 10 : 5;
-      readings.forEach((r, i) => {
-        if ((readings.length - 1 - i) % labelEvery === 0) {
-          svg.append(el("text", { x: x(i + offset), y: H - 6, "text-anchor": i + offset === MAX_POINTS - 1 ? "end" : "middle" }, clock(r.ts)));
+
+    if (vis.length) {
+      // Split into runs wherever data stopped for a while; fill each run, then draw the line
+      // with too-close stretches in red and empty-seat stretches in grey.
+      const area = [], line = { NORMAL: "", VIOLATION: "", VACANT: "" };
+      let runStart = 0, prevStatus = null;
+      for (let i = 0; i < vis.length; i++) {
+        const r = vis[i], px = f(x(r.ts)), py = f(y(r.distance_cm));
+        const gap = i > 0 && r.ts - vis[i - 1].ts > GAP_MS;
+        if (i > 0 && !gap) {
+          const p = vis[i - 1];
+          if (prevStatus !== r.status) line[r.status] += `M${f(x(p.ts))} ${f(y(p.distance_cm))}`;
+          line[r.status] += `L${px} ${py}`;
+          prevStatus = r.status;
+        } else {
+          prevStatus = null;
         }
-      });
+        if (gap) { area.push(vis.slice(runStart, i)); runStart = i; }
+      }
+      area.push(vis.slice(runStart));
+      for (const run of area) {
+        const d = run.map((r, i) => (i ? "L" : "M") + f(x(r.ts)) + " " + f(y(r.distance_cm))).join("");
+        svg.append(el("path", { d: `${d}L${f(x(run.at(-1).ts))} ${f(y(0))}L${f(x(run[0].ts))} ${f(y(0))}Z`, fill: "url(#aero-fill)" }));
+      }
+      const colors = { NORMAL: "var(--aqua)", VIOLATION: "var(--bad)", VACANT: "var(--idle)" };
+      for (const s of ["VACANT", "NORMAL", "VIOLATION"]) {
+        if (line[s]) svg.append(el("path", { d: line[s], fill: "none", stroke: colors[s], "stroke-width": 3, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+      }
+      const last = vis.at(-1);
+      svg.append(el("circle", { cx: f(x(last.ts)), cy: f(y(last.distance_cm)), r: 4.5, fill: colors[last.status] ?? colors.NORMAL }));
+
+      const every = W < 500 ? 20000 : 10000;
+      for (let t = Math.ceil(tStart / every) * every; t <= tEnd; t += every) {
+        const tx = x(t);
+        if (tx < pad.l + 24 || tx > W - pad.r - 24) continue;
+        svg.append(el("text", { x: f(tx), y: H - 6, "text-anchor": "middle" }, clock(t)));
+      }
     } else {
       svg.append(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle", class: "empty" }, "No readings yet"));
     }
     svg.append(el("line", { x1: pad.l, x2: W - pad.r, y1: y(thCm), y2: y(thCm), stroke: "var(--bad)", "stroke-width": 1.5, "stroke-dasharray": "6 5" }));
     $("legend-th").textContent = `Threshold ${thCm} cm`;
   }
-  new ResizeObserver(drawChart).observe(svg);
+  new ResizeObserver(() => { chartDirty = true; }).observe(svg);
 
-  // ---------- Data loading ----------
-  async function loadInitial() {
-    const [s, trends] = await Promise.all([api("/api/settings"), api("/api/trends")]);
+  // ---------- Data: live stream from the server ----------
+  function addReading(raw) {
+    const r = toReading(raw);
+    if (latest && (r.ts < latest.ts || (r.seq != null && r.seq === latest.seq))) return;
+    readings.push(r);
+    while (readings.length && readings[0].ts < r.ts - WINDOW_MS - 5000) readings.shift();
+    latest = r;
+    syncTimer(r);
+    renderReading(r);
+    chartDirty = true;
+  }
+
+  // On (re)connect: settings plus the last 60 seconds, so the chart isn't empty.
+  async function loadRecent() {
+    const [s, recent] = await Promise.all([api("/api/settings"), api("/api/recent")]);
     Object.assign(settings, s);
-    readings = trends.map(toReading).slice(-MAX_POINTS);
-    latestId = readings.at(-1)?.id ?? null;
+    const loaded = recent.map(toReading);
+    const lastLoadedTs = loaded.at(-1)?.ts ?? -Infinity;
+    readings = loaded.concat(readings.filter((r) => r.ts > lastLoadedTs));   // keep anything streamed meanwhile
+    latest = readings.at(-1) ?? null;
+    if (latest) {
+      syncTimer(latest);
+      renderReading(latest);
+    }
     renderSettings();
   }
 
-  let initialised = false;
-  async function poll() {
-    try {
-      if (!initialised) { await loadInitial(); initialised = true; }
-      const row = await api("/api/latest");
+  let stream = null;
+  function connectStream() {
+    stream = new EventSource(API + "/api/stream");
+    stream.onopen = () => {
       setServerOnline(true);
-      if (row && row.id !== latestId) {
-        const r = toReading(row);
-        latestId = r.id;
-        readings.push(r);
-        if (readings.length > MAX_POINTS) readings.shift();
-        renderReading(r);
-        drawChart();
-      } else if (readings.length) {
-        renderStale(readings.at(-1));
-      }
+      loadRecent().catch((err) => console.error(err));
+      pollStatus();
+      pollStats();
+    };
+    stream.onmessage = (e) => {
+      try { addReading(JSON.parse(e.data)); } catch (err) { console.error(err); }
+    };
+    stream.onerror = () => {
+      // The browser retries on its own; if it gave up, start over.
+      if (stream.readyState === EventSource.CLOSED) setTimeout(connectStream, 2000);
+    };
+  }
+
+  // Also the heartbeat that shows whether the server is reachable.
+  async function pollStatus() {
+    try {
+      const status = await api("/api/status");
+      setServerOnline(true);
+      renderLink(status);
+      if (latest) renderStale(latest);
     } catch (err) {
       if (err instanceof TypeError) setServerOnline(false);  // network error
       else console.error(err);
     }
   }
-
-  async function pollStatus() {
-    if (!serverOnline) return;
-    try { renderLink(await api("/api/status")); } catch (err) { console.error(err); }
-  }
   async function pollStats() {
     if (!serverOnline) return;
     try { renderStats(await api("/api/stats")); } catch (err) { console.error(err); }
+  }
+
+  let prevFrameT = null;
+  function frame(t) {
+    requestAnimationFrame(frame);
+    const dt = prevFrameT == null ? 16 : Math.min(200, t - prevFrameT);
+    prevFrameT = t;
+    renderDistance(dt);
+    renderDuration();
+    if (chartDirty) {
+      chartDirty = false;
+      drawChart();
+    }
   }
 
   // ---------- Settings ----------
@@ -876,11 +995,11 @@
   })();
 
   // ---------- Start ----------
-  drawChart();
-  poll().then(() => { pollStatus(); pollStats(); });
-  setInterval(poll, POLL_MS);
-  setInterval(pollStatus, 5000);
+  connectStream();
+  pollStatus();
+  setInterval(pollStatus, 2000);
   setInterval(pollStats, 10000);
+  requestAnimationFrame(frame);
 })();
 </script>
 </body>

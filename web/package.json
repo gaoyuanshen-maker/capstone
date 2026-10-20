@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "mock": "node mock_device.js"
+    "mock": "node mock_device.js",
+    "mock:slow": "node mock_device.js --hz=0.5"
   },
   "dependencies": {
     "@serialport/parser-readline": "^13.0.0",
