@@ -110,22 +110,43 @@ app.post("/api/settings", (request, response) => {
 
       currentSettings.distance_threshold_mm = distance_threshold_mm;
       currentSettings.sitting_alert_minutes = sitting_alert_minutes;
-      console.log(
-        "[settings] 准备发送给板子, distance:",
-        distance_threshold_mm,
-        "alert:",
-        sitting_alert_minutes,
-        "串口是否打开:",
-        !!(serial && serial.isOpen),
-      );
-      if (serial && serial.isOpen) {
-        serial.write(`SET:DIST=${distance_threshold_mm}\r\n`);
-        setTimeout(() => {
-          serial.write(`SET:ALERT=${sitting_alert_minutes * 60}\r\n`);
-        }, 100);
-      }
+      const sent_to_board = sendSettingsToBoard();
 
-      return response.json({ ok: true, settings: currentSettings });
+      return response.json({
+        ok: true,
+        settings: currentSettings,
+        sent_to_board,
+      });
+    },
+  );
+});
+
+app.get("/api/status", (request, response) => {
+  response.json({
+    serial_open: !!(serial && serial.isOpen),
+    serial_path: SERIAL_PORT_PATH,
+  });
+});
+
+// 今天(本地时间)的统计
+app.get("/api/stats", (request, response) => {
+  database.get(
+    `SELECT COUNT(*) AS readings,
+            SUM(status = 'VIOLATION') AS violations,
+            SUM(status != 'VACANT') AS present,
+            AVG(CASE WHEN status != 'VACANT' THEN distance_cm END) AS avg_distance_cm
+     FROM readings
+     WHERE date(timestamp, 'localtime') = date('now', 'localtime')`,
+    (error, row) => {
+      if (error) {
+        return response.status(500).json({ error: "Could not read stats." });
+      }
+      return response.json({
+        readings: row.readings ?? 0,
+        violations: row.violations ?? 0,
+        present: row.present ?? 0,
+        avg_distance_cm: row.avg_distance_cm,
+      });
     },
   );
 });
@@ -151,6 +172,25 @@ function loadSettingsFromDb(callback) {
     }
     if (callback) callback();
   });
+}
+
+// 把当前设置通过串口发给板子,返回是否真的发出去了
+function sendSettingsToBoard() {
+  const isOpen = !!(serial && serial.isOpen);
+  console.log(
+    "[settings] 发送给板子, distance:",
+    currentSettings.distance_threshold_mm,
+    "alert:",
+    currentSettings.sitting_alert_minutes,
+    "串口是否打开:",
+    isOpen,
+  );
+  if (!isOpen) return false;
+  serial.write(`SET:DIST=${currentSettings.distance_threshold_mm}\r\n`);
+  setTimeout(() => {
+    serial.write(`SET:ALERT=${currentSettings.sitting_alert_minutes * 60}\r\n`);
+  }, 100);
+  return true;
 }
 
 let presentSinceMs = null;
@@ -202,6 +242,8 @@ try {
 
   serial.on("open", () => {
     console.log(`[serial] 已连接硬件: ${SERIAL_PORT_PATH}`);
+    // 板子重启/重新插上后,把网页保存的设置重新发一遍
+    sendSettingsToBoard();
   });
 
   serial.on("error", (error) => {
@@ -242,7 +284,8 @@ database.run(
       process.exitCode = 1;
       return;
     }
-    loadSettingsFromDb();
+    // 串口可能比数据库先打开,读到设置后再同步一次
+    loadSettingsFromDb(sendSettingsToBoard);
     app.listen(port, () => {
       console.log(`DeskSentry listening at http://localhost:${port}`);
     });
