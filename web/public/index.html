@@ -155,7 +155,7 @@
     background: linear-gradient(180deg, #d5e7f3, #f4fbff); border: 1px solid rgba(40,120,190,.3); box-shadow: inset 0 2px 3px rgba(10,60,110,.18); }
   .meter > span { display: block; height: 100%; width: 0; border-radius: 999px;
     background: linear-gradient(180deg, #a6e4ff 0%, #2fa2ef 50%, #1186dc 51%, #5cc4ff 100%); transition: width .4s ease; }
-  .meter.over > span { background: linear-gradient(180deg, #ffe39a 0%, #f5a623 50%, #e08a00 51%, #ffc04d 100%); }
+  .meter.over > span { background: linear-gradient(180deg, #ffb3a3 0%, #f0533f 50%, #d6312a 51%, #ff6c55 100%); }
 
   .alert { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; color: #6b4200; font-weight: 700;
     background: linear-gradient(180deg, rgba(255,247,214,.92), rgba(255,226,140,.82)); border-color: #f2c14e; }
@@ -345,8 +345,8 @@
       <form id="settings-form" novalidate>
         <div class="field">
           <label for="th-input">Too-close threshold</label>
-          <div class="row"><input id="th-input" type="number" min="50" max="2000" step="10" value="250"><span class="unit">mm</span></div>
-          <span class="hint">50 to 2000 mm. Closer than this counts as a violation.</span>
+          <div class="row"><input id="th-input" type="number" min="10" max="100" step="1" value="25"><span class="unit">cm</span></div>
+          <span class="hint">10 to 100 cm. Closer than this counts as a violation.</span>
         </div>
         <div class="field">
           <label for="alert-input">Sitting alert after</label>
@@ -384,7 +384,7 @@
   const STALE_MS = 15000;       // no reading for this long → "No new data"
   const TIMER_STOP_MS = 5000;   // the sitting timer stops counting if readings stop
   const GAP_MS = 2500;          // the chart line breaks across gaps longer than this
-  const MAX_RANGE_CM = 200;     // VL53L0X tops out around 2 m; it reports ~819 cm when nothing is in range
+  let MAX_RANGE_CM = 100; /* server caps readings here; updated from /api/settings max_valid_cm */     // VL53L0X tops out around 2 m; it reports ~819 cm when nothing is in range
 
   // Served by Express → same origin. Opened as a file → talk to the local server.
   // Override with ?api=http://host:port
@@ -540,7 +540,9 @@
     const width = pct.toFixed(2) + "%";
     const bar = $("meter").firstElementChild;
     if (bar.style.width !== width) bar.style.width = width;
-    $("meter").classList.toggle("over", dur >= alertSec);
+    const over = timer.since !== null && dur >= alertSec;
+    $("meter").classList.toggle("over", over);
+    $("duration-value").classList.toggle("is-bad", over);
     setText("meter-label", `${Math.floor(pct)}% of the ${settings.sitting_alert_minutes} min alert`);
     if (timer.since !== null && dur >= alertSec && !alertShown) {
       alertShown = true;
@@ -550,7 +552,7 @@
   }
 
   function renderSettings() {
-    $("th-input").value = settings.distance_threshold_mm;
+    $("th-input").value = Math.round(settings.distance_threshold_mm / 10);
     $("alert-input").value = settings.sitting_alert_minutes;
     if (latest) renderReading(latest);
     chartDirty = true;
@@ -662,6 +664,7 @@
   async function loadRecent() {
     const [s, recent] = await Promise.all([api("/api/settings"), api("/api/recent")]);
     Object.assign(settings, s);
+    if (Number(s.max_valid_cm) > 0) MAX_RANGE_CM = Number(s.max_valid_cm);
     const loaded = recent.map(toReading);
     const lastLoadedTs = loaded.at(-1)?.ts ?? -Infinity;
     readings = loaded.concat(readings.filter((r) => r.ts > lastLoadedTs));   // keep anything streamed meanwhile
@@ -728,9 +731,10 @@
   }
   $("settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const th = Number($("th-input").value);
+    const thCm = Number($("th-input").value);
+    const th = thCm * 10;
     const al = Number($("alert-input").value);
-    if (!Number.isInteger(th) || th < 50 || th > 2000) return setMsg("Threshold must be a whole number from 50 to 2000 mm.", "error");
+    if (!Number.isInteger(thCm) || thCm < 10 || thCm > 100) return setMsg("Threshold must be a whole number from 10 to 100 cm.", "error");
     if (!Number.isInteger(al) || al < 1 || al > 600) return setMsg("Alert time must be a whole number from 1 to 600 minutes.", "error");
     $("settings-submit").disabled = true;
     setMsg("Saving…");

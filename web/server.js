@@ -37,7 +37,12 @@ let lastStoredStatus = null;
 const streamClients = new Set();
 
 // seated_since: 这次坐下的时间(毫秒),网页用它平滑地显示坐了多久
-function ingestReading(distance_cm, status, sitting_duration_sec, seated_since) {
+function ingestReading(
+  distance_cm,
+  status,
+  sitting_duration_sec,
+  seated_since,
+) {
   const ts = Date.now();
   const reading = {
     seq: ++readingSeq,
@@ -173,7 +178,8 @@ app.get("/api/trends", (request, response) => {
   );
 });
 app.get("/api/settings", (request, response) => {
-  response.json(currentSettings);
+  // max_valid_cm:服务器对读数的封顶值,网页用它当图表上限,不再写死
+  response.json({ ...currentSettings, max_valid_cm: MAX_VALID_CM });
 });
 
 app.post("/api/settings", (request, response) => {
@@ -182,8 +188,8 @@ app.post("/api/settings", (request, response) => {
   if (
     typeof distance_threshold_mm !== "number" ||
     !Number.isInteger(distance_threshold_mm) ||
-    distance_threshold_mm < 50 ||
-    distance_threshold_mm > 2000 ||
+    distance_threshold_mm < 100 ||
+    distance_threshold_mm > 1000 ||
     typeof sitting_alert_minutes !== "number" ||
     !Number.isInteger(sitting_alert_minutes) ||
     sitting_alert_minutes < 1 ||
@@ -292,26 +298,49 @@ function sendSettingsToBoard() {
 
 // 高频读数会有噪声,两处防抖:
 // 1. 已经是 VIOLATION 时,要退到阈值 + 1cm 以外才算恢复 NORMAL,避免在阈值附近来回跳
-// 2. 板子报 AWAY 要持续 1 秒才算离开,偶尔一两条误读不会把坐姿计时清零
+// 2. 板子报 AWAY 要持续 AWAY_GRACE_MS(10 秒)才算离开,偶尔一两条误读不会把坐姿计时清零
 const HYSTERESIS_CM = 1;
-const AWAY_GRACE_MS = 1000;
+const AWAY_GRACE_MS = Number(process.env.AWAY_GRACE_MS) || 10000; // 去抖:AWAY 要持续 10 秒才算真的离开
+// VL53L0X 超过约 100cm 信号变弱、读数乱跳:超过的值一律按 100cm 记录("100 表示 100cm 以上")
+const MAX_VALID_CM = 100;
 
 let presentSinceMs = null;
 let awaySinceMs = null;
 let presentStatus = "NORMAL";
 let lastPresentDistanceCm = null;
 let lastLogMs = 0;
+let needResync = false; // 板子发过 BOOT,等下一条有效读数再重推设置
 
 function handleSerialLine(line) {
-  const match = line.trim().match(/^DIST:(\d+),STATE:(PRESENT|AWAY)$/);
+  const text = line.trim();
+
+  // 板子重启后发来 BOOT:坐姿计时跟着板子一起归零,并标记要重推设置
+  if (text === "BOOT") {
+    console.log("[serial] 板子重启,下一条有效读数后重推设置");
+    needResync = true;
+    presentSinceMs = null;
+    awaySinceMs = null;
+    presentStatus = "NORMAL";
+    lastPresentDistanceCm = null;
+    return;
+  }
+
+  const match = text.match(/^DIST:(\d+),STATE:(PRESENT|AWAY)$/);
   if (!match) {
     console.warn(`[serial] 无法解析的数据行: "${line}"`);
     return;
   }
 
+  // 板子只在读到有效距离时才处理命令,所以等到收到 DIST 行再推设置
+  if (needResync) {
+    needResync = false;
+    sendSettingsToBoard();
+  }
+
   const distance_mm = Number(match[1]);
   const deviceState = match[2];
   let distance_cm = Math.round((distance_mm / 10) * 10) / 10;
+  if (distance_cm > MAX_VALID_CM) distance_cm = MAX_VALID_CM;
   const now = Date.now();
 
   let status;
@@ -340,14 +369,16 @@ function handleSerialLine(line) {
     if (deviceState === "PRESENT") {
       const thresholdCm = currentSettings.distance_threshold_mm / 10;
       const limit =
-        presentStatus === "VIOLATION" ? thresholdCm + HYSTERESIS_CM : thresholdCm;
+        presentStatus === "VIOLATION"
+          ? thresholdCm + HYSTERESIS_CM
+          : thresholdCm;
       presentStatus = distance_cm < limit ? "VIOLATION" : "NORMAL";
       lastPresentDistanceCm = distance_cm;
     } else if (lastPresentDistanceCm !== null) {
-      // AWAY 还没满 1 秒:沿用上一个正常距离(超量程时传感器会报 8190mm 之类的值)
+      // AWAY 还没满宽限时间:沿用上一个正常距离(超量程时传感器会报 8190mm 之类的值)
       distance_cm = lastPresentDistanceCm;
     }
-    // AWAY 还没满 1 秒时保持上一个坐姿状态
+    // AWAY 还没满宽限时间时保持上一个坐姿状态
     status = presentStatus;
   }
 
