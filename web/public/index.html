@@ -148,6 +148,7 @@
   .badge .dot { width: 10px; height: 10px; background: #fff; box-shadow: 0 0 6px #fff; }
   .badge.NORMAL { background: linear-gradient(180deg, #b9f08c 0%, #5cc22f 50%, #3fa418 51%, #6fd640 100%); }
   .badge.VIOLATION { background: linear-gradient(180deg, #ffb3a3 0%, #f0533f 50%, #d6312a 51%, #ff6c55 100%); animation: pulse 1.2s ease-in-out infinite; }
+  .badge.NODATA { background: linear-gradient(180deg, #e6e6e6 0%, #b4b4b4 50%, #999 51%, #c2c2c2 100%); }
   .badge.VACANT { background: linear-gradient(180deg, #e8f0f6 0%, #9db3c4 50%, #7d97ab 51%, #a9bfcf 100%); }
   @keyframes pulse { 50% { box-shadow: 0 0 0 7px rgba(255,107,90,.3), 0 4px 10px var(--shadow); } }
 
@@ -383,8 +384,9 @@
   const WINDOW_MS = 60000;      // the chart shows the last 60 seconds
   const STALE_MS = 15000;       // no reading for this long → "No new data"
   const TIMER_STOP_MS = 5000;   // the sitting timer stops counting if readings stop
+  const NODATA_MS = 5000;        // no reading for this long → status turns grey "NO DATA"
   const GAP_MS = 2500;          // the chart line breaks across gaps longer than this
-  let MAX_RANGE_CM = 100; /* server caps readings here; updated from /api/settings max_valid_cm */     // VL53L0X tops out around 2 m; it reports ~819 cm when nothing is in range
+  let MAX_RANGE_CM = 100;       // readings above this are unreliable; the server caps them here and sends the value as max_valid_cm in /api/settings
 
   // Served by Express → same origin. Opened as a file → talk to the local server.
   // Override with ?api=http://host:port
@@ -470,9 +472,17 @@
     renderStale(r);
   }
 
+  const noData = () => !!latest && Date.now() - latest.ts > NODATA_MS;
+
   function renderStale(r) {
     const stale = Date.now() - r.ts > STALE_MS;
-    setText("status-hint", stale
+    if (noData()) {
+      // Readings stopped (board unplugged, sensor fault...): grey out instead of freezing on the last value.
+      if ($("status-badge").className !== "badge NODATA") $("status-badge").className = "badge NODATA";
+      setText("status-value", "NO DATA");
+      if ($("distance-value").className !== "big num is-idle") $("distance-value").className = "big num is-idle";
+    }
+    setText("status-hint", noData()
       ? `No new data since ${clock(r.ts)}`
       : { NORMAL: "Posture OK", VIOLATION: "Too close to the screen", VACANT: "Seat empty, timer reset" }[r.status] ?? "");
     setText("dev-last", `${clock(r.ts)} (${ago(r.ts)})`);
@@ -481,6 +491,14 @@
   let shownDistance = null;
   function renderDistance(dt) {
     if (!latest) return;
+    if (noData()) {
+      shownDistance = null;
+      const dv = $("distance-value");
+      if (dv.firstChild.nodeValue !== "--") dv.firstChild.nodeValue = "--";
+      setText("distance-hint", "Waiting for the sensor");
+      renderStale(latest);
+      return;
+    }
     const target = latest.distance_cm;
     if (target >= MAX_RANGE_CM) {
       shownDistance = null;
@@ -542,7 +560,7 @@
     if (bar.style.width !== width) bar.style.width = width;
     const over = timer.since !== null && dur >= alertSec;
     $("meter").classList.toggle("over", over);
-    $("duration-value").classList.toggle("is-bad", over);
+    $("duration-value").classList.toggle("is-bad", over);   // past the user's alert time → number and bar turn red
     setText("meter-label", `${Math.floor(pct)}% of the ${settings.sitting_alert_minutes} min alert`);
     if (timer.since !== null && dur >= alertSec && !alertShown) {
       alertShown = true;
@@ -552,7 +570,7 @@
   }
 
   function renderSettings() {
-    $("th-input").value = Math.round(settings.distance_threshold_mm / 10);
+    $("th-input").value = Math.round(settings.distance_threshold_mm / 10);   // the server and board use mm; the form shows cm
     $("alert-input").value = settings.sitting_alert_minutes;
     if (latest) renderReading(latest);
     chartDirty = true;
@@ -732,7 +750,7 @@
   $("settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const thCm = Number($("th-input").value);
-    const th = thCm * 10;
+    const th = thCm * 10;                                  // cm in the form → mm for the server
     const al = Number($("alert-input").value);
     if (!Number.isInteger(thCm) || thCm < 10 || thCm > 100) return setMsg("Threshold must be a whole number from 10 to 100 cm.", "error");
     if (!Number.isInteger(al) || al < 1 || al > 600) return setMsg("Alert time must be a whole number from 1 to 600 minutes.", "error");

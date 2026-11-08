@@ -300,7 +300,7 @@ function sendSettingsToBoard() {
 // 1. 已经是 VIOLATION 时,要退到阈值 + 1cm 以外才算恢复 NORMAL,避免在阈值附近来回跳
 // 2. 板子报 AWAY 要持续 AWAY_GRACE_MS(10 秒)才算离开,偶尔一两条误读不会把坐姿计时清零
 const HYSTERESIS_CM = 1;
-const AWAY_GRACE_MS = Number(process.env.AWAY_GRACE_MS) || 10000; // 去抖:AWAY 要持续 10 秒才算真的离开
+const AWAY_GRACE_MS = Number(process.env.AWAY_GRACE_MS) || 2000; // 去抖:AWAY 要持续 10 秒才算真的离开
 // VL53L0X 超过约 100cm 信号变弱、读数乱跳:超过的值一律按 100cm 记录("100 表示 100cm 以上")
 const MAX_VALID_CM = 100;
 
@@ -392,31 +392,74 @@ function handleSerialLine(line) {
     );
   }
 }
-let serial;
-try {
-  serial = new SerialPort({
-    path: SERIAL_PORT_PATH,
-    baudRate: SERIAL_BAUD_RATE,
-  });
-  const parser = serial.pipe(new ReadlineParser({ delimiter: "\r\n" }));
+let serial = null;
+let serialRetryTimer = null;
+let serialOutageLogged = false; // 一次断线只打一条日志,避免每2秒刷屏
 
-  serial.on("open", () => {
+function scheduleSerialReconnect() {
+  if (serialRetryTimer) return;
+  serialRetryTimer = setTimeout(() => {
+    serialRetryTimer = null;
+    openSerial();
+  }, 2000);
+}
+
+function openSerial() {
+  let port;
+  try {
+    port = new SerialPort({
+      path: SERIAL_PORT_PATH,
+      baudRate: SERIAL_BAUD_RATE,
+      autoOpen: false,
+    });
+  } catch (error) {
+    console.warn(`[serial] 无法创建串口: ${error.message}`);
+    scheduleSerialReconnect();
+    return;
+  }
+  serial = port;
+  const parser = port.pipe(new ReadlineParser({ delimiter: "\r\n" }));
+
+  port.on("open", () => {
+    serialOutageLogged = false;
     console.log(`[serial] 已连接硬件: ${SERIAL_PORT_PATH}`);
     // 板子重启/重新插上后,把网页保存的设置重新发一遍
     sendSettingsToBoard();
   });
 
-  serial.on("error", (error) => {
-    console.warn(
-      `[serial] 串口错误（硬件没接也没关系，不影响网页）: ${error.message}`,
-    );
+  port.on("error", (error) => {
+    if (!serialOutageLogged) {
+      serialOutageLogged = true;
+      console.warn(
+        `[serial] 串口错误（硬件没接也没关系，不影响网页），每2秒自动重试: ${error.message}`,
+      );
+    }
+  });
+
+  // 拔线/板子断电会触发 close:2秒后自动重新打开
+  port.on("close", () => {
+    if (!serialOutageLogged) {
+      serialOutageLogged = true;
+      console.warn("[serial] 串口已断开,每2秒自动重试");
+    }
+    scheduleSerialReconnect();
   });
 
   parser.on("data", handleSerialLine);
-} catch (error) {
-  console.warn(`[serial] 无法打开串口: ${error.message}`);
-}
 
+  port.open((error) => {
+    if (error) {
+      if (!serialOutageLogged) {
+        serialOutageLogged = true;
+        console.warn(
+          `[serial] 打不开串口 ${SERIAL_PORT_PATH},每2秒自动重试: ${error.message}`,
+        );
+      }
+      scheduleSerialReconnect();
+    }
+  });
+}
+openSerial();
 // ==================== 建表+启动服务器 ====================
 database.run(
   `CREATE TABLE IF NOT EXISTS settings (
