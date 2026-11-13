@@ -7,8 +7,10 @@ const { ReadlineParser } = require("@serialport/parser-readline");
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
-const databasePath = path.join(__dirname, "desksentry.db");
+const databasePath = process.env.DB_PATH || path.join(__dirname, "desksentry.db");
 const database = new sqlite3.Database(databasePath);
+
+const sessions = require("./sessions").createSessions(database);
 
 app.use(cors());
 app.use(express.json());
@@ -39,6 +41,7 @@ const streamClients = new Set();
 // seated_since: 这次坐下的时间(毫秒),网页用它平滑地显示坐了多久
 function ingestReading(distance_cm, status, sitting_duration_sec, seated_since) {
   const ts = Date.now();
+  sessions.ingest(status, ts).catch(error => console.error("[sessions]", error));
   const reading = {
     seq: ++readingSeq,
     ts,
@@ -247,6 +250,15 @@ app.get("/api/stats", (request, response) => {
     },
   );
 });
+app.get("/api/reports", async (request, response) => {
+  const period = request.query.period || "day";
+  const zone = request.query.time_zone || "UTC";
+  if (!["day", "week"].includes(period) || typeof zone !== "string") return response.status(400).json({error: "Invalid report period or time zone."});
+  try { new Intl.DateTimeFormat("en", {timeZone: zone}); }
+  catch { return response.status(400).json({error: "Invalid time zone."}); }
+  try { response.json(await sessions.report(period, zone)); }
+  catch (error) { console.error(error); response.status(500).json({error: "Could not load report."}); }
+});
 app.use(express.static(path.join(__dirname, "public")));
 
 // ==================== 串口监听（真实硬件数据）====================
@@ -292,15 +304,16 @@ function sendSettingsToBoard() {
 
 // 高频读数会有噪声,两处防抖:
 // 1. 已经是 VIOLATION 时,要退到阈值 + 1cm 以外才算恢复 NORMAL,避免在阈值附近来回跳
-// 2. 板子报 AWAY 要持续 1 秒才算离开,偶尔一两条误读不会把坐姿计时清零
+// 2. 板子报 AWAY 要持续 10 秒才算离开,偶尔一两条误读不会把坐姿计时清零
 const HYSTERESIS_CM = 1;
-const AWAY_GRACE_MS = 1000;
+const AWAY_GRACE_MS = 10000;
 
 let presentSinceMs = null;
 let awaySinceMs = null;
 let presentStatus = "NORMAL";
 let lastPresentDistanceCm = null;
 let lastLogMs = 0;
+let lastSerialReadingMs = null;
 
 function handleSerialLine(line) {
   const match = line.trim().match(/^DIST:(\d+),STATE:(PRESENT|AWAY)$/);
@@ -313,6 +326,13 @@ function handleSerialLine(line) {
   const deviceState = match[2];
   let distance_cm = Math.round((distance_mm / 10) * 10) / 10;
   const now = Date.now();
+  if (lastSerialReadingMs !== null && now - lastSerialReadingMs > 15000) {
+    presentSinceMs = null;
+    awaySinceMs = null;
+    presentStatus = "NORMAL";
+    lastPresentDistanceCm = null;
+  }
+  lastSerialReadingMs = now;
 
   let status;
   let sitting_duration_sec;
@@ -344,10 +364,10 @@ function handleSerialLine(line) {
       presentStatus = distance_cm < limit ? "VIOLATION" : "NORMAL";
       lastPresentDistanceCm = distance_cm;
     } else if (lastPresentDistanceCm !== null) {
-      // AWAY 还没满 1 秒:沿用上一个正常距离(超量程时传感器会报 8190mm 之类的值)
+      // AWAY 还没满 10 秒:沿用上一个正常距离(超量程时传感器会报 8190mm 之类的值)
       distance_cm = lastPresentDistanceCm;
     }
-    // AWAY 还没满 1 秒时保持上一个坐姿状态
+    // AWAY 还没满 10 秒时保持上一个坐姿状态
     status = presentStatus;
   }
 

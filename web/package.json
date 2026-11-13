@@ -7,7 +7,10 @@
   "scripts": {
     "start": "node server.js",
     "mock": "node mock_device.js",
-    "mock:slow": "node mock_device.js --hz=0.5"
+    "mock:slow": "node mock_device.js --hz=0.5",
+    "test": "node --test test/*.test.js",
+    "test:browser": "node test/browser.cjs",
+    "test:serial": "python3 test/serial.py"
   },
   "dependencies": {
     "@serialport/parser-readline": "^13.0.0",
@@ -15,5 +18,8 @@
     "express": "^5.1.0",
     "serialport": "^13.0.0",
     "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
   }
 }
