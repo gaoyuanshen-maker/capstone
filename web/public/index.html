@@ -272,16 +272,75 @@
     .dot.live, .badge.VIOLATION, .bubbles i, .crt-overlay::before, .crt-overlay::after, body.crt .wrap { animation: none; }
     .meter > span { transition: none; }
   }
-  .report-controls { display:flex; gap:8px; }
-  .report-controls [aria-pressed="true"] { background:#d0f5ee; box-shadow:inset 0 0 0 2px #318b87; }
-  .report-note { font-size:12px; color:var(--muted); }
-  .health-tip { border-left:3px solid var(--aqua); padding:10px 14px; background:rgba(255,255,255,.55); border-radius:8px; }
-  .report-days { display:grid; gap:8px; padding:0; list-style:none; }
-  .report-days li { display:grid; grid-template-columns:52px minmax(0,1fr) 90px; align-items:center; gap:10px; font-size:13px; }
-  .report-track { height:18px; border-radius:8px; background:rgba(30,100,140,.08); overflow:hidden; }
-  .report-fill { display:block; height:100%; background:linear-gradient(90deg,#60c9ed,#4bc6a7); border-radius:8px; }
-  .report-sessions { max-height:240px; overflow:auto; padding-left:22px; font-size:13px; }
-  .report-sessions li { padding:5px; }
+  /* Calm surfaces keep the Aero palette while giving content a solid reading layer. */
+  :root { --glass:#edf7fd; --glass-strong:#fcfeff; --muted:#426078; }
+  .panel { padding:24px; backdrop-filter:none; -webkit-backdrop-filter:none; }
+  .label { letter-spacing:.045em; }
+  .crt-overlay { opacity:.16; }
+  .report-controls { display:flex; gap:4px; padding:4px; background:#e3eef6; border-radius:999px; }
+  .report-controls button { border:0; box-shadow:none; background:transparent; padding:9px 20px; }
+  .report-controls [aria-pressed="true"] { background:#fff; color:#075d9b; box-shadow:0 2px 7px #234f7020; }
+  .report-note { font-size:12px; color:var(--muted); margin:8px 0 16px; }
+  .report-metrics { gap:14px; margin:20px 0; }
+  .report-metrics > div { padding:20px; gap:12px; background:#fff; border:1px solid #d7e7f1; border-radius:16px; }
+  .report-metrics b { font-size:32px; letter-spacing:-.03em; }
+  .metric-icon { width:34px; height:34px; display:grid; place-items:center; background:#e3f3fd; color:#0866a6; border-radius:10px; font-size:20px; }
+  .report-metrics > div:nth-child(2) .metric-icon { background:#def5ef; color:#147358; }
+  .report-metrics > div:nth-child(3) .metric-icon { background:#fff0d9; color:#945d0c; }
+  .report-visual { background:#fff; padding:20px; border:1px solid #d7e7f1; border-radius:16px; }
+  .visual-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:16px; }
+  .visual-head h3 { margin:0; font:800 16px var(--font-display); }
+  .visual-head span { color:var(--muted); font-size:12px; }
+  .report-days { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:12px; padding:0; list-style:none; margin:0; }
+  .report-days li { display:flex; flex-direction:column; align-items:center; min-width:0; gap:10px; font-size:12px; }
+  .report-track { height:140px; width:100%; max-width:64px; background:#f0f5f9; border-radius:10px; display:flex; align-items:flex-end; overflow:hidden; }
+  .report-fill { display:block; width:100%; background:linear-gradient(0deg,#258cce,#7bd7ee); border-radius:8px 8px 0 0; min-height:0; }
+  .report-days .is-today .report-fill { background:linear-gradient(0deg,#159b79,#7ce0be); }
+  .report-days .is-today > span:first-child { color:#116a52; font-weight:800; }
+  .report-sessions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; list-style:none; padding:0; margin:0; max-height:360px; overflow:auto; }
+  .session-card { border:1px solid #dce8f0; border-radius:12px; background:#f8fbfe; padding:14px; min-width:0; }
+  .session-card summary { cursor:pointer; display:grid; gap:8px; list-style:none; }
+  .session-card summary::after { content:'View details +'; font-size:11px; color:var(--aqua-deep); }
+  .session-card[open] summary::after { content:'Close details −'; }
+  .session-card strong { font:800 23px var(--font-display); }
+  .session-time { font-size:12px; color:var(--muted); }
+  .session-line { height:5px; border-radius:5px; background:#dfebf3; overflow:hidden; }
+  .session-line i { display:block; height:100%; background:#4aadd9; border-radius:5px; }
+  .session-card.ongoing { border-color:#70cbb0; background:#f0fbf7; }
+  .session-card.ongoing .session-line i { background:#25a680; }
+  .session-detail { margin:12px 0 0; font-size:12px; }
+  .empty-report { padding:30px 12px; text-align:center; color:var(--muted); }
+  .health-tip { display:flex; align-items:center; gap:16px; padding:20px; margin:18px 0 0; background:#e5f5ef; border:1px solid #b9dfd0; border-radius:16px; }
+  .health-icon { display:grid; place-items:center; width:44px; height:44px; border-radius:14px; background:#fff; color:#187358; font-size:24px; flex:none; }
+  .health-tip strong { font:800 17px var(--font-display); }
+  .health-tip p { margin:4px 0 0; font-size:13px; color:#315c50; }
+  .report-rules { margin-top:18px; color:var(--muted); font-size:12px; }
+  .report-rules summary { cursor:pointer; width:fit-content; padding:6px 0; }
+  .report-rules ul { padding-left:20px; line-height:1.8; }
+  .setting-cards { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .setting-card { background:#fff; border:1px solid #d7e7f1; border-radius:16px; padding:18px; align-content:start; gap:10px; }
+  .setting-card .hint { line-height:1.5; }
+  .setting-card label { font-size:15px; }
+  .advice-chip { display:block; font-size:12px; color:#1b6554; background:#e9f7f1; padding:8px 10px; border-radius:8px; }
+  .setting-card details { font-size:12px; color:var(--muted); }
+  .setting-card summary { cursor:pointer; }
+  .presets { display:flex; gap:6px; flex-wrap:wrap; }
+  .presets button { padding:5px 10px; font-size:12px; box-shadow:none; background:#edf5fc; border-color:#cfe1ef; }
+  .presets button[aria-pressed="true"] { background:#dceffb; border-color:#247daf; color:#095382; }
+  .lower { grid-template-columns:minmax(0,1.65fr) minmax(260px,1fr); align-items:start; }
+  .device-summary { margin-top:14px; font-size:13px; color:var(--muted); }
+  .device-summary summary { cursor:pointer; padding:8px 0; }
+  .device { margin-top:10px; font-size:12px; }
+  @media (max-width:820px) { .lower { grid-template-columns:1fr; } .report-sessions { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  @media (max-width:540px) {
+    .panel { padding:18px; } .report-metrics { grid-template-columns:1fr; gap:8px; }
+    .report-metrics > div { grid-template-columns:34px 1fr auto; align-items:center; gap:10px; padding:14px; }
+    .report-metrics .label { font-size:11px; } .report-metrics b { font-size:25px; }
+    .setting-cards { grid-template-columns:1fr; } .report-sessions { grid-template-columns:1fr; }
+    .report-days { gap:5px; } .report-days li { font-size:10px; } .report-visual { padding:14px; }
+    .health-tip { align-items:flex-start; padding:16px; gap:12px; }
+  }
+  @media (prefers-reduced-motion:reduce) { .bubbles, .crt-overlay { display:none !important; } }
 </style>
 </head>
 <body>
@@ -358,54 +417,68 @@
     </div>
     <p id="report-status" class="report-note" role="status">Loading report…</p>
     <div id="report-content" hidden>
-      <div class="stats">
-        <div><span class="label">Total sitting</span><b id="report-total">—</b></div>
-        <div><span class="label">Sessions</span><b id="report-count">—</b></div>
-        <div><span class="label">Longest in period</span><b id="report-longest">—</b></div>
+      <div class="stats report-metrics">
+        <div><span class="metric-icon" aria-hidden="true">◷</span><span class="label">Total sitting</span><b id="report-total">—</b></div>
+        <div><span class="metric-icon" aria-hidden="true">▦</span><span class="label">Sessions</span><b id="report-count">—</b></div>
+        <div><span class="metric-icon" aria-hidden="true">⌛</span><span class="label">Longest stretch</span><b id="report-longest">—</b></div>
       </div>
-      <p id="health-tip" class="health-tip"></p>
-      <ul id="report-days" class="report-days" aria-label="Daily sitting totals" hidden></ul>
-      <ol id="report-sessions" class="report-sessions" aria-label="Today's sitting sessions" hidden></ol>
-      <p class="report-note">Weeks start on Monday. Sessions crossing midnight are split between days; a session touching this period counts once. Signal gaps over 15 seconds stop counting at the last reading. History starts when this feature is enabled.</p>
+      <div class="report-visual">
+        <div class="visual-head"><h3 id="report-visual-title">Your day, in sessions</h3><span id="report-visual-hint">Tap a card for details</span></div>
+        <div id="report-empty" class="empty-report" hidden><span aria-hidden="true">◷</span><br>No sessions yet<br><small>Your next sitting session will appear here.</small></div>
+        <ul id="report-days" class="report-days" aria-label="Daily sitting totals" hidden></ul>
+        <ol id="report-sessions" class="report-sessions" aria-label="Today's sitting sessions" hidden></ol>
+      </div>
+      <div id="health-tip" class="health-tip"><span class="health-icon" aria-hidden="true">✧</span><div><strong id="health-title">Make room to move</strong><p id="health-action">Small breaks make a difference.</p></div></div>
+      <details class="report-rules"><summary>About these numbers</summary><ul>
+        <li>Weeks start on Monday, in your local time zone.</li>
+        <li>Sessions crossing midnight are split by day; each session counts once per period.</li>
+        <li>Signal gaps over 15 seconds stop counting at the last reading.</li>
+        <li>History starts when reports were enabled.</li>
+      </ul></details>
     </div>
   </section>
 
   <div class="lower">
     <section class="panel" aria-labelledby="settings-heading">
-      <h2 id="settings-heading">Board settings</h2>
+      <h2 id="settings-heading">Your comfort settings</h2>
       <form id="settings-form" novalidate>
-        <div class="field">
+        <div class="setting-cards">
+        <div class="field setting-card">
           <label for="th-input">Too-close threshold</label>
           <div class="row"><input id="th-input" aria-describedby="distance-advice" type="number" min="50" max="2000" step="10" value="250"><span class="unit">mm</span></div>
-          <span class="hint">50 to 2000 mm. Closer than this counts as a violation.</span>
-          <span class="hint" id="distance-advice">For a desktop monitor, try a viewing distance around 50–70 cm. This is a warning threshold, not a target distance; calibrate it for your sensor position and comfortable reading.</span>
+          <span class="advice-chip" id="distance-advice">Viewing guide · 50–70 cm</span>
+          <details><summary>Calibrate your threshold</summary><p>Set a warning threshold from 50–2000 mm. This is not a target viewing distance: adjust for your sensor position and comfortable reading.</p></details>
         </div>
-        <div class="field">
+        <div class="field setting-card">
           <label for="alert-input">Sitting alert after</label>
           <div class="row"><input id="alert-input" aria-describedby="time-advice" type="number" min="1" max="600" step="1" value="30"><span class="unit">min</span></div>
-          <span class="hint">1 to 600 minutes. The board buzzes at this point.</span>
-          <span class="hint" id="time-advice">Try a reminder every 30–60 minutes, then stand up and move for a few minutes when comfortable.</span>
+          <div class="presets" role="group" aria-label="Reminder presets"><button type="button" data-minutes="30" aria-pressed="false">30 min</button><button type="button" data-minutes="45" aria-pressed="false">45 min</button><button type="button" data-minutes="60" aria-pressed="false">60 min</button></div>
+          <span class="advice-chip" id="time-advice">Try 30–60 min · then move a little</span>
+          <details><summary>How reminders work</summary><p>Choose 1–600 minutes. The board buzzes when your sitting time reaches this limit.</p></details>
+        </div>
         </div>
         <div class="ctrl-row">
-          <button type="submit" class="primary" id="settings-submit">Save and send to board</button>
+          <button type="submit" class="primary" id="settings-submit">Save settings</button>
         </div>
         <p class="msg" id="settings-msg" role="status"></p>
       </form>
     </section>
 
     <section class="panel" aria-labelledby="today-heading">
-      <h2 id="today-heading">Today</h2>
+      <h2 id="today-heading">Distance snapshot</h2>
       <div class="stats">
         <div><span class="label">Logged</span><b id="st-count">--</b></div>
         <div><span class="label">Too close</span><b id="st-bad">--</b></div>
         <div><span class="label">Avg dist.</span><b id="st-avg">--</b></div>
       </div>
+      <details class="device-summary"><summary>Device &amp; connection</summary>
       <dl class="device">
         <dt>Server</dt><dd id="dev-server">--</dd>
         <dt>Board</dt><dd id="dev-board">--</dd>
         <dt>Data rate</dt><dd id="dev-rate">--</dd>
         <dt>Last reading</dt><dd id="dev-last">--</dd>
       </dl>
+      </details>
     </section>
   </div>
 </div>
@@ -585,6 +658,7 @@
   function renderSettings() {
     $("th-input").value = settings.distance_threshold_mm;
     $("alert-input").value = settings.sitting_alert_minutes;
+    syncPresets();
     if (latest) renderReading(latest);
     chartDirty = true;
   }
@@ -767,19 +841,22 @@
       const r = await api(`/api/reports?period=${period}&time_zone=${encodeURIComponent(reportZone)}`);
       if (request !== reportRequest) return;
       $("report-content").hidden = false;
-      $("report-status").textContent = `${period === "day" ? "Today" : "This week"} · ${r.time_zone} · Updated ${clock(r.generated_at)}${r.session_count ? "" : " · No sitting sessions recorded yet."}`;
+      $("report-status").textContent = `${r.time_zone} · Updated ${clock(r.generated_at)}`;
       $("report-total").textContent = reportDuration(r.total_seconds);
       $("report-count").textContent = r.session_count;
       $("report-longest").textContent = reportDuration(r.longest_seconds);
       const ongoing = r.sessions.find(s => s.ongoing);
       const currentSeconds = latest && latest.status !== "VACANT" && Date.now() - latest.ts < STALE_MS
         ? Math.max(0, (Date.now() - (latest.seated_since ?? latest.ts - latest.sitting_duration_sec * 1000)) / 1000) : 0;
-      $("health-tip").textContent = ongoing && currentSeconds >= settings.sitting_alert_minutes * 60
-        ? `A gentle reminder: you've been sitting for ${reportDuration(currentSeconds)}. When comfortable, stand up, stretch and take a short walk.`
-        : r.longest_seconds >= settings.sitting_alert_minutes * 60
-          ? `Your longest stretch in this period was ${reportDuration(r.longest_seconds)}. Try a short movement break before your next ${settings.sitting_alert_minutes}-minute reminder.`
-          : r.session_count ? "A little movement goes a long way. Change position, relax your shoulders and give your eyes a break from the screen."
-          : "Your next sitting session will appear here. Set a comfortable reminder and make room for small movement breaks.";
+      const due = ongoing && currentSeconds >= settings.sitting_alert_minutes * 60;
+      const longStretch = r.longest_seconds >= settings.sitting_alert_minutes * 60;
+      $("health-title").textContent = due ? "Time for a little movement" : longStretch ? "Make your next stretch shorter" : "Small breaks, better days";
+      $("health-action").textContent = due ? `${reportDuration(currentSeconds)} sitting · Stand up, stretch or take a short walk.`
+        : longStretch ? `Longest stretch: ${reportDuration(r.longest_seconds)} · Plan a break before ${settings.sitting_alert_minutes} min.`
+        : "Relax your shoulders, change position and look away from the screen.";
+      $("report-empty").hidden = r.session_count > 0 || period === "week";
+      $("report-visual-title").textContent = period === "week" ? "Your week at a glance" : "Your day, in sessions";
+      $("report-visual-hint").textContent = period === "week" ? "Daily sitting time" : r.session_count ? "Tap a card for details" : "";
       $("report-days").hidden = period !== "week";
       $("report-sessions").hidden = period !== "day";
       $("report-days").replaceChildren();
@@ -788,21 +865,31 @@
         const li = document.createElement("li"), label = document.createElement("span"), track = document.createElement("span"), fill = document.createElement("span"), value = document.createElement("span");
         label.textContent = new Date(day.date + "T12:00:00Z").toLocaleDateString([], {weekday:"short", timeZone:"UTC"});
         track.className = "report-track"; fill.className = "report-fill";
-        fill.style.width = `${day.total_seconds / max * 100}%`; track.append(fill);
+        fill.style.height = `${day.total_seconds / max * 100}%`;
+        if (day.date === new Intl.DateTimeFormat("en-CA", {timeZone: reportZone, year:"numeric", month:"2-digit", day:"2-digit"}).format(r.generated_at)) li.classList.add("is-today"); track.append(fill);
         value.textContent = reportDuration(day.total_seconds);
         li.title = `${day.date}: ${value.textContent}, ${day.session_count} sessions`;
         li.append(label, track, value); $("report-days").append(li);
       }
       $("report-sessions").replaceChildren();
-      for (const session of r.sessions) {
-        const li = document.createElement("li");
-        li.textContent = `${clock(session.started_at)} – ${session.ongoing ? "In progress" : clock(session.ended_at)} · ${reportDuration((session.ended_at - session.started_at) / 1000)}${session.end_reason && session.end_reason !== "vacant" ? " · Signal interrupted" : ""}`;
-        $("report-sessions").append(li);
+      for (const session of [...r.sessions].reverse()) {
+        const li = document.createElement("li"), card = document.createElement("details"), summary = document.createElement("summary"), duration = document.createElement("strong"), time = document.createElement("span"), line = document.createElement("span"), fill = document.createElement("i"), detail = document.createElement("p");
+        card.className = "session-card" + (session.ongoing ? " ongoing" : "");
+        duration.textContent = reportDuration((session.ended_at - session.started_at) / 1000);
+        time.className = "session-time";
+        time.textContent = `${clock(session.started_at).slice(0,5)} · ${session.ongoing ? "In progress" : "Completed"}`;
+        line.className = "session-line";
+        fill.style.width = `${Math.max(3, (session.ended_at - session.started_at) / 1000 / Math.max(1,r.longest_seconds) * 100)}%`;
+        line.append(fill);
+        summary.append(time, duration, line);
+        detail.className = "session-detail";
+        detail.textContent = `${clock(session.started_at)} – ${session.ongoing ? "Now" : clock(session.ended_at)}${session.end_reason && session.end_reason !== "vacant" ? " · Signal interrupted" : ""}`;
+        card.append(summary, detail); li.append(card); $("report-sessions").append(li);
       }
     } catch (error) {
       if (request !== reportRequest) return;
       $("report-content").hidden = true;
-      $("report-status").textContent = "Report unavailable. Retrying automatically; you can also select a period to retry.";
+      $("report-status").textContent = "Report unavailable · Select Today or This week to retry.";
     }
   }
   for (const period of ["day", "week"]) $("report-" + period).addEventListener("click", () => {
@@ -820,6 +907,15 @@
     $("settings-msg").textContent = text;
     $("settings-msg").className = "msg" + (kind ? " " + kind : "");
   }
+  function syncPresets() {
+    document.querySelectorAll("[data-minutes]").forEach(button => button.setAttribute("aria-pressed", String(Number(button.dataset.minutes) === Number($("alert-input").value))));
+  }
+  document.querySelectorAll("[data-minutes]").forEach(button => button.addEventListener("click", () => {
+    $("alert-input").value = button.dataset.minutes;
+    syncPresets();
+    setMsg("Ready to save.");
+  }));
+  $("alert-input").addEventListener("input", syncPresets);
   $("settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const th = Number($("th-input").value);
@@ -865,7 +961,7 @@
     setToggle("crt-toggle", "crt-label", "CRT", on);
     savePref("desksentry-crt", on);
   }
-  setCrt(pref("desksentry-crt", true));
+  setCrt(pref("desksentry-crt", false));
   $("crt-toggle").addEventListener("click", () => setCrt(!document.body.classList.contains("crt")));
 
   let glitchOn = true;
