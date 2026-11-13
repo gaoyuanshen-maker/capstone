@@ -1,3 +1,5 @@
 web/node_modules/
 web/*.db
 .DS_Store
+
+/work/

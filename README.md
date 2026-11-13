@@ -103,3 +103,39 @@ The MCU can report sensor readings using the following endpoint:
   }
 
 ```
+
+## Sitting reports
+
+The Aero dashboard has Today / This week reports, session totals, counts,
+longest stretches, daily bars and gentle movement reminders. Settings include
+viewing-distance calibration advice and a suggested reminder interval.
+
+`GET /api/reports?period=day|week&time_zone=Asia%2FTokyo` returns seconds,
+sessions and daily aggregates. The browser supplies its IANA time zone; direct
+API requests default to UTC. Weeks start Monday. Cross-boundary sessions are
+clipped to the requested period and count once per overlapping period.
+
+The `sessions` table is created automatically in the existing database. Presence
+starts a session and confirmed VACANT ends it, preserving the serial input's
+10-second absence grace period. NORMAL/VIOLATION changes do not split sessions.
+A signal gap over 15 seconds stops accumulation at the last observed reading;
+resumed input starts a new session. Process restart closes interrupted records
+at their last observed reading. Downtime is not inferred as sitting time.
+History starts with this feature; old telemetry is not backfilled. Running
+reports include fresh ongoing sessions. Summaries refresh every ten seconds.
+
+### Verification
+
+From `web/` after installing dependencies (browser tests require Node.js 20+):
+
+- `npm test`: in-memory SQLite tests for transitions, gaps, restart, cross-day/
+  cross-week allocation and daylight-saving boundaries.
+- `npm run test:serial`: Python 3 / Unix PTY simulation through the real serial
+  parser, including brief absence, 10-second confirmed departure and signal loss.
+- `npm run test:browser`: Playwright checks for HTTP telemetry, report switching,
+  empty/ongoing states, API validation, failure/retry and mobile layout. Install
+  Chromium using `npx playwright install chromium` if needed, or set
+  `CHROMIUM_PATH` to an installed browser. The test uses temporary databases.
+
+Integration tests use ports 3101 and 3102. Normal startup remains `npm start`.
+`DB_PATH` can select a separate SQLite file for development or simulations.

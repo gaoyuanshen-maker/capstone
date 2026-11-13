@@ -7,8 +7,10 @@ const { ReadlineParser } = require("@serialport/parser-readline");
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
-const databasePath = path.join(__dirname, "desksentry.db");
+const databasePath = process.env.DB_PATH || path.join(__dirname, "desksentry.db");
 const database = new sqlite3.Database(databasePath);
+
+const sessions = require("./sessions").createSessions(database);
 
 app.use(cors());
 app.use(express.json());
@@ -39,6 +41,7 @@ const streamClients = new Set();
 // seated_since: 这次坐下的时间(毫秒),网页用它平滑地显示坐了多久
 function ingestReading(distance_cm, status, sitting_duration_sec, seated_since) {
   const ts = Date.now();
+  sessions.ingest(status, ts).catch(error => console.error("[sessions]", error));
   const reading = {
     seq: ++readingSeq,
     ts,
@@ -247,6 +250,15 @@ app.get("/api/stats", (request, response) => {
     },
   );
 });
+app.get("/api/reports", async (request, response) => {
+  const period = request.query.period || "day";
+  const zone = request.query.time_zone || "UTC";
+  if (!["day", "week"].includes(period) || typeof zone !== "string") return response.status(400).json({error: "Invalid report period or time zone."});
+  try { new Intl.DateTimeFormat("en", {timeZone: zone}); }
+  catch { return response.status(400).json({error: "Invalid time zone."}); }
+  try { response.json(await sessions.report(period, zone)); }
+  catch (error) { console.error(error); response.status(500).json({error: "Could not load report."}); }
+});
 app.use(express.static(path.join(__dirname, "public")));
 
 // ==================== 串口监听（真实硬件数据）====================
@@ -301,6 +313,7 @@ let awaySinceMs = null;
 let presentStatus = "NORMAL";
 let lastPresentDistanceCm = null;
 let lastLogMs = 0;
+let lastSerialReadingMs = null;
 
 function handleSerialLine(line) {
   const match = line.trim().match(/^DIST:(\d+),STATE:(PRESENT|AWAY)$/);
@@ -313,6 +326,13 @@ function handleSerialLine(line) {
   const deviceState = match[2];
   let distance_cm = Math.round((distance_mm / 10) * 10) / 10;
   const now = Date.now();
+  if (lastSerialReadingMs !== null && now - lastSerialReadingMs > 15000) {
+    presentSinceMs = null;
+    awaySinceMs = null;
+    presentStatus = "NORMAL";
+    lastPresentDistanceCm = null;
+  }
+  lastSerialReadingMs = now;
 
   let status;
   let sitting_duration_sec;

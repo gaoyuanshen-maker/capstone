@@ -272,6 +272,16 @@
     .dot.live, .badge.VIOLATION, .bubbles i, .crt-overlay::before, .crt-overlay::after, body.crt .wrap { animation: none; }
     .meter > span { transition: none; }
   }
+  .report-controls { display:flex; gap:8px; }
+  .report-controls [aria-pressed="true"] { background:#d0f5ee; box-shadow:inset 0 0 0 2px #318b87; }
+  .report-note { font-size:12px; color:var(--muted); }
+  .health-tip { border-left:3px solid var(--aqua); padding:10px 14px; background:rgba(255,255,255,.55); border-radius:8px; }
+  .report-days { display:grid; gap:8px; padding:0; list-style:none; }
+  .report-days li { display:grid; grid-template-columns:52px minmax(0,1fr) 90px; align-items:center; gap:10px; font-size:13px; }
+  .report-track { height:18px; border-radius:8px; background:rgba(30,100,140,.08); overflow:hidden; }
+  .report-fill { display:block; height:100%; background:linear-gradient(90deg,#60c9ed,#4bc6a7); border-radius:8px; }
+  .report-sessions { max-height:240px; overflow:auto; padding-left:22px; font-size:13px; }
+  .report-sessions li { padding:5px; }
 </style>
 </head>
 <body>
@@ -339,19 +349,42 @@
     <svg id="chart" role="img" aria-label="Line chart of viewing distance over the last 60 seconds"></svg>
   </section>
 
+  <section class="panel" aria-labelledby="report-heading">
+    <div class="chart-head"><h2 id="report-heading">Your sitting report</h2>
+      <div class="report-controls" role="group" aria-label="Report period">
+        <button id="report-day" aria-pressed="true">Today</button>
+        <button id="report-week" aria-pressed="false">This week</button>
+      </div>
+    </div>
+    <p id="report-status" class="report-note" role="status">Loading report…</p>
+    <div id="report-content" hidden>
+      <div class="stats">
+        <div><span class="label">Total sitting</span><b id="report-total">—</b></div>
+        <div><span class="label">Sessions</span><b id="report-count">—</b></div>
+        <div><span class="label">Longest in period</span><b id="report-longest">—</b></div>
+      </div>
+      <p id="health-tip" class="health-tip"></p>
+      <ul id="report-days" class="report-days" aria-label="Daily sitting totals" hidden></ul>
+      <ol id="report-sessions" class="report-sessions" aria-label="Today's sitting sessions" hidden></ol>
+      <p class="report-note">Weeks start on Monday. Sessions crossing midnight are split between days; a session touching this period counts once. Signal gaps over 15 seconds stop counting at the last reading. History starts when this feature is enabled.</p>
+    </div>
+  </section>
+
   <div class="lower">
     <section class="panel" aria-labelledby="settings-heading">
       <h2 id="settings-heading">Board settings</h2>
       <form id="settings-form" novalidate>
         <div class="field">
           <label for="th-input">Too-close threshold</label>
-          <div class="row"><input id="th-input" type="number" min="50" max="2000" step="10" value="250"><span class="unit">mm</span></div>
+          <div class="row"><input id="th-input" aria-describedby="distance-advice" type="number" min="50" max="2000" step="10" value="250"><span class="unit">mm</span></div>
           <span class="hint">50 to 2000 mm. Closer than this counts as a violation.</span>
+          <span class="hint" id="distance-advice">For a desktop monitor, try a viewing distance around 50–70 cm. This is a warning threshold, not a target distance; calibrate it for your sensor position and comfortable reading.</span>
         </div>
         <div class="field">
           <label for="alert-input">Sitting alert after</label>
-          <div class="row"><input id="alert-input" type="number" min="1" max="600" step="1" value="30"><span class="unit">min</span></div>
+          <div class="row"><input id="alert-input" aria-describedby="time-advice" type="number" min="1" max="600" step="1" value="30"><span class="unit">min</span></div>
           <span class="hint">1 to 600 minutes. The board buzzes at this point.</span>
+          <span class="hint" id="time-advice">Try a reminder every 30–60 minutes, then stand up and move for a few minutes when comfortable.</span>
         </div>
         <div class="ctrl-row">
           <button type="submit" class="primary" id="settings-submit">Save and send to board</button>
@@ -720,6 +753,67 @@
       drawChart();
     }
   }
+
+  // ---------- Sitting reports ----------
+  let reportPeriod = "day", reportRequest = 0;
+  const reportZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const reportDuration = (seconds) => {
+    const minutes = Math.floor(seconds / 60);
+    return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : minutes ? `${minutes}m` : `${Math.floor(seconds)}s`;
+  };
+  async function loadReport() {
+    const request = ++reportRequest, period = reportPeriod;
+    try {
+      const r = await api(`/api/reports?period=${period}&time_zone=${encodeURIComponent(reportZone)}`);
+      if (request !== reportRequest) return;
+      $("report-content").hidden = false;
+      $("report-status").textContent = `${period === "day" ? "Today" : "This week"} · ${r.time_zone} · Updated ${clock(r.generated_at)}${r.session_count ? "" : " · No sitting sessions recorded yet."}`;
+      $("report-total").textContent = reportDuration(r.total_seconds);
+      $("report-count").textContent = r.session_count;
+      $("report-longest").textContent = reportDuration(r.longest_seconds);
+      const ongoing = r.sessions.find(s => s.ongoing);
+      const currentSeconds = latest && latest.status !== "VACANT" && Date.now() - latest.ts < STALE_MS
+        ? Math.max(0, (Date.now() - (latest.seated_since ?? latest.ts - latest.sitting_duration_sec * 1000)) / 1000) : 0;
+      $("health-tip").textContent = ongoing && currentSeconds >= settings.sitting_alert_minutes * 60
+        ? `A gentle reminder: you've been sitting for ${reportDuration(currentSeconds)}. When comfortable, stand up, stretch and take a short walk.`
+        : r.longest_seconds >= settings.sitting_alert_minutes * 60
+          ? `Your longest stretch in this period was ${reportDuration(r.longest_seconds)}. Try a short movement break before your next ${settings.sitting_alert_minutes}-minute reminder.`
+          : r.session_count ? "A little movement goes a long way. Change position, relax your shoulders and give your eyes a break from the screen."
+          : "Your next sitting session will appear here. Set a comfortable reminder and make room for small movement breaks.";
+      $("report-days").hidden = period !== "week";
+      $("report-sessions").hidden = period !== "day";
+      $("report-days").replaceChildren();
+      const max = Math.max(1, ...r.days.map(d => d.total_seconds));
+      for (const day of r.days) {
+        const li = document.createElement("li"), label = document.createElement("span"), track = document.createElement("span"), fill = document.createElement("span"), value = document.createElement("span");
+        label.textContent = new Date(day.date + "T12:00:00Z").toLocaleDateString([], {weekday:"short", timeZone:"UTC"});
+        track.className = "report-track"; fill.className = "report-fill";
+        fill.style.width = `${day.total_seconds / max * 100}%`; track.append(fill);
+        value.textContent = reportDuration(day.total_seconds);
+        li.title = `${day.date}: ${value.textContent}, ${day.session_count} sessions`;
+        li.append(label, track, value); $("report-days").append(li);
+      }
+      $("report-sessions").replaceChildren();
+      for (const session of r.sessions) {
+        const li = document.createElement("li");
+        li.textContent = `${clock(session.started_at)} – ${session.ongoing ? "In progress" : clock(session.ended_at)} · ${reportDuration((session.ended_at - session.started_at) / 1000)}${session.end_reason && session.end_reason !== "vacant" ? " · Signal interrupted" : ""}`;
+        $("report-sessions").append(li);
+      }
+    } catch (error) {
+      if (request !== reportRequest) return;
+      $("report-content").hidden = true;
+      $("report-status").textContent = "Report unavailable. Retrying automatically; you can also select a period to retry.";
+    }
+  }
+  for (const period of ["day", "week"]) $("report-" + period).addEventListener("click", () => {
+    reportPeriod = period;
+    for (const p of ["day", "week"]) $("report-" + p).setAttribute("aria-pressed", String(p === period));
+    $("report-content").hidden = true;
+    $("report-status").textContent = "Loading report…";
+    loadReport();
+  });
+  loadReport();
+  setInterval(loadReport, 10000);
 
   // ---------- Settings ----------
   function setMsg(text, kind) {
